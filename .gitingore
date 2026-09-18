@@ -1,0 +1,24 @@
+# Python bytecode & runtime caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.swp
+
+# Agent target workspace (Optional: ignore generated code artifacts)
+# target_repo/*
+# !target_repo/.gitkeep
+
+# OS generated files
+.DS_Store
+Thumbs.db

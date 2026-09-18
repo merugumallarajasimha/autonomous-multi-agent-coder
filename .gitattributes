@@ -1,0 +1,10 @@
+# Auto detect text files and perform LF normalization on commit
+* text=auto
+
+# Enforce explicit LF for Python files
+*.py text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.ico binary
