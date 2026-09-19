@@ -1,6 +1,6 @@
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
-from tools.file_ops import list_files
+from autocoder.tools.file_ops import list_files
 
 class Plan(BaseModel):
     steps: list[str] = Field(description="List of implementation steps")
