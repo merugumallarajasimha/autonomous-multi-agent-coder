@@ -1,0 +1,6 @@
+workflow:
+  - planner
+  - coder
+  - sandbox
+  - verifier
+  - approval

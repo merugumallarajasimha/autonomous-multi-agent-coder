@@ -1,0 +1,16 @@
+models:
+  planner:
+    - provider: ollama
+      model: qwen2.5:3b
+  coder:
+    - provider: ollama
+      model: qwen2.5-coder:7b
+  verifier:
+    - provider: ollama
+      model: qwen2.5-coder:7b
+  reviewer:
+    - provider: ollama
+      model: qwen2.5-coder:7b
+  fixer:
+    - provider: ollama
+      model: qwen2.5-coder:7b

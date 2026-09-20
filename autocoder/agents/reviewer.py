@@ -1,16 +1,31 @@
 # autocoder/agents/reviewer.py
 import os
 import re
+from typing import List, Dict, Any
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field
 
 from autocoder.state import AgentState
-from autocoder.tools.file_ops import list_files, read_file, write_file
+from autocoder.tools.file_ops import list_files, read_file
+from autocoder.events.emitter import emit
+from autocoder.analysis.static_checks import run_python_static_checks
+from autocoder.analysis.finding import Finding, validate_finding
 
 
-class ReviewEdit(BaseModel):
-    filepath: str = Field(description="Target file path relative to repo root")
-    clean_code: str = Field(description="Refactored code with type hints and docstrings")
+# Pydantic model matching the Finding TypedDict shape for structured output
+class ReviewFinding(BaseModel):
+    severity: str = Field(description="critical | high | medium | low")
+    category: str = Field(description="bug | security | refactor | cosmetic")
+    file: str = Field(description="Relative file path")
+    line: int = Field(description="Line number (1-indexed), 0 if file-level")
+    description: str = Field(description="Human-readable issue description")
+    suggested_fix: str = Field(description="Concrete suggested fix")
+    confidence: float = Field(description="0.0 to 1.0", ge=0.0, le=1.0)
+    source: str = Field(description="static_analysis | llm_review")
+
+
+class ReviewOutput(BaseModel):
+    findings: List[ReviewFinding] = Field(description="List of review findings")
 
 
 def _clean_code(code: str) -> str:
@@ -25,60 +40,114 @@ def _clean_code(code: str) -> str:
 
 
 def reviewer_node(state: AgentState) -> dict:
+    emit(agent="reviewer", event="AGENT_STARTED", message="Reviewer node started")
     repo = state["repo_path"]
-    print("\n🔍 Reviewer Node: Conducting code review & refactoring...")
-
-    existing_files = list_files(repo)
+    written_files = state.get("written_files", [])
     
-    # Target non-test Python files for review
-    target_file = ""
-    for f in existing_files:
-        if not os.path.basename(f).startswith("test_") and f.endswith(".py"):
-            target_file = f
-            break
-            
-    if not target_file:
-        print("⚠️ No suitable python files found to review. Skipping.")
+    print("\n🔍 Reviewer Node: Conducting code review (static + LLM)...")
+    
+    if not written_files:
+        print("⚠️ No written files to review. Skipping.")
+        emit(agent="reviewer", event="AGENT_FINISHED", message="No files to review", metadata={"status": "skipped"})
         return {
-            "is_refactored": True,
-            "history": state.get("history", []) + [{"agent": "reviewer", "status": "skipped"}]
+            "review_findings": [],
+            "history": state.get("history", []) + [{"agent": "reviewer", "status": "skipped"}],
         }
-
-    # Pass target file path to read_file
-    full_target_path = os.path.join(repo, target_file) if not os.path.isabs(target_file) else target_file
-    code_content = read_file(full_target_path)
-
-    llm = ChatOllama(
-        model="qwen2.5-coder:7b", 
-        temperature=0,
-        timeout=30
-    ).with_structured_output(ReviewEdit)
     
-    prompt = (
-        f"You are a Senior Code Reviewer.\n"
-        f"Refactor the following Python code to include type hints and clear Google-style docstrings.\n"
-        f"Do NOT change any core functional logic or broken logic that tests rely on.\n\n"
-        f"File: {target_file}\n"
-        f"Content:\n{code_content}\n"
-    )
-
-    try:
-        review: ReviewEdit = llm.invoke(prompt)
+    # Filter to Python files only for static checks
+    python_files = [f for f in written_files if f.endswith(".py")]
+    
+    # 1. Run deterministic static analysis tools
+    static_findings = []
+    if python_files:
+        emit(agent="reviewer", event="STATIC_CHECKS_STARTED", message=f"Running static checks on {len(python_files)} files")
+        static_findings = run_python_static_checks(repo, python_files)
+        emit(agent="reviewer", event="STATIC_CHECKS_COMPLETED", message=f"Static checks found {len(static_findings)} issues", metadata={"count": len(static_findings)})
+    
+    # 2. Run LLM-based review pass for issues static tools can't catch
+    llm_findings = []
+    
+    for file_path in python_files:
+        full_path = os.path.join(repo, file_path) if not os.path.isabs(file_path) else file_path
+        code_content = read_file(full_path)
         
-        # Strip markdown fences if Ollama placed them inside the Pydantic string field
-        clean_code = _clean_code(review.clean_code)
+        if not code_content.strip():
+            continue
         
-        save_path = review.filepath if os.path.isabs(review.filepath) else os.path.join(repo, review.filepath)
-        write_file(save_path, clean_code)
-        reviewed_file = review.filepath
-        print(f"✅ Code review completed and saved for: {reviewed_file}")
-
-    except Exception as e:
-        print(f"⚠️ Reviewer LLM parsing/timeout issue ({e}). Retaining original source code...")
-        reviewed_file = target_file
-        write_file(full_target_path, _clean_code(code_content))
-
+        llm = ChatOllama(
+            model="qwen2.5-coder:7b",
+            temperature=0,
+            timeout=60
+        ).with_structured_output(ReviewOutput)
+        
+        prompt = (
+            f"You are a Senior Code Reviewer.\n"
+            f"Review the following Python code for issues that static analysis tools "
+            f"typically miss: logic bugs, unclear error handling, missing edge cases, "
+            f"naming problems, unnecessary complexity, and security concerns.\n\n"
+            f"File: {file_path}\n"
+            f"Content:\n{code_content}\n\n"
+            f"Return a list of findings. Each finding must include:\n"
+            f"- severity: critical | high | medium | low\n"
+            f"- category: bug | security | refactor | cosmetic\n"
+            f"- file: {file_path}\n"
+            f"- line: integer line number (1-indexed, 0 for file-level)\n"
+            f"- description: what is wrong\n"
+            f"- suggested_fix: concrete fix suggestion\n"
+            f"- confidence: 0.0 to 1.0\n"
+            f"- source: \"llm_review\"\n\n"
+            f"Be thorough but precise. Only report real issues."
+        )
+        
+        emit(agent="reviewer", event="LLM_REVIEW_STARTED", message=f"Starting LLM review of {file_path}")
+        
+        try:
+            review: ReviewOutput = llm.invoke(prompt)
+            # Convert Pydantic models to dicts and add source
+            for finding in review.findings:
+                finding_dict = finding.model_dump()
+                finding_dict["source"] = "llm_review"
+                llm_findings.append(finding_dict)
+            emit(agent="reviewer", event="LLM_REVIEW_COMPLETED", message=f"LLM review of {file_path} produced {len(review.findings)} findings")
+        except Exception as e:
+            emit(agent="reviewer", event="LLM_REVIEW_ERROR", message=f"LLM review failed for {file_path}: {e}")
+            # Add a finding indicating the review failed
+            llm_findings.append({
+                "severity": "low",
+                "category": "bug",
+                "file": file_path,
+                "line": 0,
+                "description": f"LLM review failed: {e}",
+                "suggested_fix": "Manual review recommended",
+                "confidence": 0.5,
+                "source": "llm_review",
+            })
+    
+    # 3. Combine and validate all findings
+    all_findings = static_findings + llm_findings
+    
+    # Validate each LLM finding, drop invalid ones
+    validated_findings = []
+    dropped_count = 0
+    for f in all_findings:
+        if validate_finding(f):
+            validated_findings.append(f)
+        else:
+            dropped_count += 1
+    
+    if dropped_count > 0:
+        emit(agent="reviewer", event="VALIDATION_DROPPED", message=f"Dropped {dropped_count} invalid LLM findings", metadata={"dropped": dropped_count})
+    
+    # Emit one summary event with all findings
+    emit(agent="reviewer", event="REVIEW_COMPLETED", message=f"Review completed with {len(validated_findings)} validated findings", metadata={"findings": validated_findings})
+    
+    # Also emit one REVIEW_FINDING per finding for granular tracking
+    for finding in validated_findings:
+        emit(agent="reviewer", event="REVIEW_FINDING", message=f"Finding in {finding['file']}:{finding['line']}", metadata=finding)
+    
+    emit(agent="reviewer", event="AGENT_FINISHED", message="Reviewer node completed", metadata={"total_findings": len(validated_findings), "dropped_invalid": dropped_count})
+    
     return {
-        "is_refactored": True,
-        "history": state.get("history", []) + [{"agent": "reviewer", "file": reviewed_file}],
+        "review_findings": validated_findings,
+        "history": state.get("history", []) + [{"agent": "reviewer", "findings_count": len(validated_findings)}],
     }

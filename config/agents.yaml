@@ -1,0 +1,23 @@
+agents:
+  planner:
+    description: "Breaks user request into implementation steps"
+  coder:
+    description: "Writes/edits source files"
+  sandbox:
+    description: "Creates a git checkpoint before risky operations"
+  verifier:
+    description: "Runs build/tests via language adapter"
+  reviewer:
+    description: "Produces bug/refactor/cosmetic findings, no direct edits"
+  security_reviewer:
+    description: "Produces security findings, no direct edits"
+  fixer:
+    description: "Patches code based on test failures or bug findings"
+  refactorer:
+    description: "Applies minimal non-behavior-changing edits"
+  repository_indexer:
+    description: "Builds repo_map.json for relevance filtering"
+  approval:
+    description: "Human-in-the-loop git commit gate"
+  report:
+    description: "Writes findings/results to output without further action"

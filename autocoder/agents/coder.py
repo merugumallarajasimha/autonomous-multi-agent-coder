@@ -6,6 +6,9 @@ from pydantic import BaseModel, Field
 
 from autocoder.state import AgentState
 from autocoder.tools.file_ops import list_files, read_file, write_file
+from autocoder.events.emitter import emit
+from autocoder.index.repo_map import load_repo_map, save_repo_map
+from autocoder.index.relevance import select_relevant_files
 
 
 class FileItem(BaseModel):
@@ -29,17 +32,51 @@ def _clean_code(code: str) -> str:
 
 
 def coder_node(state: AgentState) -> dict:
+    emit(agent="coder", event="AGENT_STARTED", message="Coder node started")
     repo = state["repo_path"]
     plan_text = "\n".join(f"- {s}" for s in state.get("plan", []))
     task_request = state.get("task", "")
-    existing_files = list_files(repo)
     test_logs = state.get("test_logs", "")
-
-    # Build context from existing repository files
+    target_files_from_plan = state.get("target_files", [])
+    
+    # Load or build repo_map (once per task, not per retry)
+    repo_map = load_repo_map(repo)
+    if repo_map is None:
+        emit(agent="coder", event="BUILDING_REPO_MAP", message="Building repo_map.json for the first time")
+        save_repo_map(repo)
+        repo_map = load_repo_map(repo)
+        if repo_map is None:
+            emit(agent="coder", event="REPO_MAP_FAILED", message="Failed to build repo_map, falling back to full file list")
+            repo_map = {"files": [{"path": f} for f in list_files(repo)], "symbols": {}}
+    
+    # Combine relevance signals: keyword match + plan's target_files
+    user_request = state.get("user_request", task_request)
+    relevant_files = select_relevant_files(user_request, repo_map)
+    
+    # Also include target_files from plan if they exist and are in the repo
+    all_relevant = set(relevant_files)
+    for tf in target_files_from_plan:
+        # Check if target file exists in repo
+        repo_files = [f["path"] for f in repo_map.get("files", [])]
+        if tf in repo_files:
+            all_relevant.add(tf)
+    
+    if not all_relevant:
+        emit(agent="coder", event="RELEVANCE_FALLBACK", message="Keyword filter found no meaningful matches; falling back to reading all files")
+        files = list_files(repo)
+    else:
+        files = list(all_relevant)
+        emit(agent="coder", event="RELEVANCE_FILTERED", message=f"Filtered to {len(files)} relevant files", metadata={"files": files})
+    
+    # Build context from filtered repository files
     context = ""
-    for f in existing_files:
+    for f in files:
         full_path = os.path.join(repo, f) if not os.path.isabs(f) else f
-        context += f"\n--- File: {f} ---\n{read_file(full_path)}\n"
+        emit(agent="coder", event="READING_FILE", message=f"Reading {f}", metadata={"filepath": f})
+        try:
+            context += f"\n--- File: {f} ---\n{read_file(full_path)}\n"
+        except Exception:
+            context += f"\n--- File: {f} ---\n[ERROR READING FILE]\n"
 
     # Synchronized with qwen2.5-coder:7b model and explicit timeout guard
     llm = ChatOllama(
@@ -65,11 +102,13 @@ def coder_node(state: AgentState) -> dict:
 
     written_files = []
     try:
+        emit(agent="coder", event="GENERATING_CODE", message="Generating code via LLM")
         edit_batch: MultiFileEdit = llm.invoke(prompt)
         for item in edit_batch.files:
             clean_content = _clean_code(item.content)
             write_file(repo, item.filepath, clean_content)
             written_files.append(item.filepath)
+            emit(agent="coder", event="FILE_CREATED", message=f"Created {item.filepath}", metadata={"filepath": item.filepath})
         print(f"✅ Coder Agent generated files: {written_files}")
 
     except Exception as e:
@@ -122,10 +161,14 @@ def coder_node(state: AgentState) -> dict:
         write_file(repo, "banking_utils.py", banking_code)
         write_file(repo, "test_banking_utils.py", test_banking_code)
         written_files = ["banking_utils.py", "test_banking_utils.py"]
+        for f in written_files:
+            emit(agent="coder", event="FILE_CREATED", message=f"Created {f} (fallback)", metadata={"filepath": f})
 
     current_iterations = state.get("iteration_count", 0) + 1
 
+    emit(agent="coder", event="AGENT_FINISHED", message="Coder node completed", metadata={"files": written_files})
     return {
         "iteration_count": current_iterations,
+        "written_files": written_files,
         "history": state.get("history", []) + [{"agent": "coder", "files": written_files}],
     }

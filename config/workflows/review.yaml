@@ -1,0 +1,4 @@
+workflow:
+  - repository_indexer
+  - reviewer
+  - report

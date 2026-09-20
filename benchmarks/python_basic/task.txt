@@ -1,0 +1,1 @@
+Add divide() with proper zero division handling and tests.

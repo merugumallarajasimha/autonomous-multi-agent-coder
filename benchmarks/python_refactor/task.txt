@@ -1,0 +1,6 @@
+Refactor data_processor.py to improve code quality:
+- Add type hints to all functions
+- Eliminate duplicated logic (sum calculation appears twice)
+- Use built-in functions (sum(), max()) instead of manual loops
+- Improve variable naming (s, mx, val, etc.)
+- Add docstrings
