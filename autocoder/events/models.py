@@ -1,6 +1,5 @@
 # autocoder/events/models.py
-from typing import TypedDict, frozenset
-
+from typing import TypedDict, FrozenSet
 
 class AgentEvent(TypedDict):
     """Represents a single event in the agent workflow lifecycle.
@@ -39,4 +38,31 @@ EVENT_TYPES: frozenset[str] = frozenset([
     "ROLLBACK",
     "ITERATION_STARTED",
     "WORKFLOW_COMPLETED",
+    "BUILDING_REPO_MAP",
+    "REPO_MAP_FAILED",
+    "RELEVANCE_FALLBACK",
+    "RELEVANCE_FILTERED",
+    "PLANNING",
+    "STATIC_CHECKS_STARTED",
+    "STATIC_CHECKS_COMPLETED",
+    "LLM_REVIEW_STARTED",
+    "LLM_REVIEW_COMPLETED",
+    "LLM_REVIEW_ERROR",
+    "VALIDATION_DROPPED",
+    "REVIEW_COMPLETED",
+    "SECURITY_STATIC_CHECKS_STARTED",
+    "SECURITY_STATIC_CHECKS_COMPLETED",
+    "LLM_SECURITY_REVIEW_STARTED",
+    "LLM_SECURITY_REVIEW_COMPLETED",
+    "LLM_SECURITY_REVIEW_ERROR",
+    "SECURITY_REVIEW_COMPLETED",
+    "SECURITY_FINDING",
+    "FINDINGS_ROUTER_STARTED",
+    "FINDINGS_ROUTED",
+    "REPORT_ONLY_FINDING",
+    "REFRACTOR_LLM_ERROR",
+    "NO_REFACTOR_FINDINGS",
+    "PROCESSING_FINDINGS",
+    "SKIPPED_FINDING",
+    "APPLYING_REFACTOR",
 ])

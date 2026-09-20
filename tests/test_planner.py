@@ -1,13 +1,26 @@
 import pytest
+from unittest.mock import patch, MagicMock
 from autocoder.agents.planner import planner_node
 
 
 class TestPlannerNode:
-    def test_planner_returns_expected_keys(self, tmp_path):
+    @patch("autocoder.agents.planner._model_router")
+    def test_planner_returns_expected_keys(self, mock_router, tmp_path):
         # Create a minimal repo with one Python file
         repo = tmp_path / "repo"
         repo.mkdir()
         (repo / "math_ops.py").write_text("def add(a, b):\n    return a + b\n")
+
+        # Mock the model router to return a mock provider
+        mock_provider = MagicMock()
+        mock_provider.invoke.return_value = {
+            "success": True,
+            "data": MagicMock(
+                steps=["Create multiply function", "Add tests"],
+                target_files=["math_ops.py"]
+            )
+        }
+        mock_router.get.return_value = mock_provider
 
         state = {
             "repo_path": str(repo),
@@ -29,9 +42,20 @@ class TestPlannerNode:
         assert result["history"][0]["agent"] == "planner"
         assert "steps" in result["history"][0]
 
-    def test_planner_handles_empty_repo(self, tmp_path):
+    @patch("autocoder.agents.planner._model_router")
+    def test_planner_handles_empty_repo(self, mock_router, tmp_path):
         repo = tmp_path / "empty_repo"
         repo.mkdir()
+
+        mock_provider = MagicMock()
+        mock_provider.invoke.return_value = {
+            "success": True,
+            "data": MagicMock(
+                steps=["Create new module"],
+                target_files=["new_module.py"]
+            )
+        }
+        mock_router.get.return_value = mock_provider
 
         state = {
             "repo_path": str(repo),

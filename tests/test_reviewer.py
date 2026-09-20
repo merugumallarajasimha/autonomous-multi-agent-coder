@@ -1,13 +1,23 @@
 import pytest
+from unittest.mock import patch, MagicMock
 from autocoder.agents.reviewer import reviewer_node
 
 
 class TestReviewerNode:
-    def test_reviewer_returns_expected_keys(self, tmp_path):
+    @patch("autocoder.agents.reviewer.ChatOllama")
+    def test_reviewer_returns_expected_keys(self, mock_chatollama, tmp_path):
         repo = tmp_path / "repo"
         repo.mkdir()
         # Create a non-test Python file to review
         (repo / "module.py").write_text("def add(a, b):\n    return a + b\n")
+
+        # Mock ChatOllama
+        mock_llm = MagicMock()
+        mock_llm.with_structured_output.return_value = mock_llm
+        mock_llm.invoke.return_value = MagicMock(
+            findings=[]
+        )
+        mock_chatollama.return_value = mock_llm
 
         state = {
             "repo_path": str(repo),
@@ -25,7 +35,7 @@ class TestReviewerNode:
         assert isinstance(result["history"], list)
         assert len(result["history"]) == 1
         assert result["history"][0]["agent"] == "reviewer"
-        assert "file" in result["history"][0]
+        assert "findings_count" in result["history"][0]
 
     def test_reviewer_handles_no_python_files(self, tmp_path):
         repo = tmp_path / "empty_repo"

@@ -1,6 +1,6 @@
 # autocoder/index/repo_map.py
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -49,7 +49,7 @@ def build_repo_map(repo_path: str) -> Dict[str, Any]:
         "import_graph": import_graph,
         "entry_points": entry_points,
         "config_files": config_files,
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

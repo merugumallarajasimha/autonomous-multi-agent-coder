@@ -44,15 +44,26 @@ def reviewer_node(state: AgentState) -> dict:
     repo = state["repo_path"]
     written_files = state.get("written_files", [])
     
-    print("\n🔍 Reviewer Node: Conducting code review (static + LLM)...")
+    print("\n[Reviewer] Conducting code review (static + LLM)...")
     
     if not written_files:
-        print("⚠️ No written files to review. Skipping.")
-        emit(agent="reviewer", event="AGENT_FINISHED", message="No files to review", metadata={"status": "skipped"})
-        return {
-            "review_findings": [],
-            "history": state.get("history", []) + [{"agent": "reviewer", "status": "skipped"}],
-        }
+        # Fallback: scan repo for Python files if no written_files tracked
+        all_files = list_files(repo)
+        # Filter out test files (test_*.py or *_test.py)
+        written_files = [
+            f for f in all_files
+            if f.endswith(".py") and not (f.startswith("test_") or f.endswith("_test.py"))
+        ]
+        if written_files:
+            print(f"[Reviewer] No written_files in state, scanning repo found {len(written_files)} Python files")
+        else:
+            print("[Reviewer] No written files to review. Skipping.")
+            emit(agent="reviewer", event="AGENT_FINISHED", message="No files to review", metadata={"status": "skipped"})
+            return {
+                "review_findings": [],
+                "is_refactored": True,
+                "history": state.get("history", []) + [{"agent": "reviewer", "status": "skipped"}],
+            }
     
     # Filter to Python files only for static checks
     python_files = [f for f in written_files if f.endswith(".py")]
@@ -149,5 +160,6 @@ def reviewer_node(state: AgentState) -> dict:
     
     return {
         "review_findings": validated_findings,
+        "is_refactored": True,
         "history": state.get("history", []) + [{"agent": "reviewer", "findings_count": len(validated_findings)}],
     }

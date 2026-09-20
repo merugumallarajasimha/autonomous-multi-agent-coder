@@ -1,5 +1,5 @@
 # autocoder/events/emitter.py
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from autocoder.events.models import AgentEvent, EVENT_TYPES
@@ -35,7 +35,7 @@ def emit(
         raise ValueError(f"Invalid event type: {event!r}. Must be one of {sorted(EVENT_TYPES)}")
     
     event_dict: AgentEvent = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "agent": agent,
         "event": event,
         "status": status,

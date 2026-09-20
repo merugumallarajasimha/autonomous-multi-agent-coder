@@ -1,10 +1,44 @@
-# autocoder/analysis/static_checks.py
 import json
 import os
 import shutil
 import subprocess
+import ast
 from pathlib import Path
 from typing import List, Dict, Any
+
+
+def _is_potential_path_injection(node: ast.AST) -> bool:
+    """Heuristic: detect string concatenation or f-string that could involve user input.
+    Returns False for safe literals (ast.Constant strings), True for variables/calls/f-strings."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        # String literal is safe
+        return False
+    
+    if isinstance(node, ast.JoinedStr):
+        for value in node.values:
+            if isinstance(value, ast.FormattedValue):
+                return True
+    
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _is_potential_path_injection(node.left) or _is_potential_path_injection(node.right)
+    
+    if isinstance(node, ast.Name):
+        # Variable reference - could be user input
+        return True
+    
+    if isinstance(node, ast.Call):
+        # Function call - could return user input
+        return True
+    
+    if isinstance(node, ast.Attribute):
+        # Attribute access - could be user input
+        return True
+    
+    if isinstance(node, ast.Subscript):
+        # Subscript - could be user input
+        return True
+    
+    return False
 
 
 def _run_tool(cmd: List[str], cwd: str) -> str:
@@ -110,68 +144,31 @@ def _parse_bandit_output(output: str, repo_path: str) -> List[Dict[str, Any]]:
 
 
 def run_python_static_checks(repo_path: str, file_paths: List[str]) -> List[Dict[str, Any]]:
-    """Runs deterministic static analysis tools against the given files (not
-    the whole repo) and returns a normalized list of findings:
-    {
-      "severity": "high" | "medium" | "low",
-      "category": "bug" | "security" | "style",
-      "file": str,
-      "line": int,
-      "description": str,
-      "source_tool": str,
-      "confidence": 1.0
-    }
-    (confidence is always 1.0 for deterministic tool output — these are not
-    guesses)
-
-    Use these tools if available on the system (check with shutil.which first,
-    skip gracefully with no findings if a tool isn't installed — do not error):
-    - `ruff check {files}` for style/bug-pattern findings (category="style" for
-      most ruff rules, category="bug" for rules in ruff's bugbear/B-prefixed
-      set specifically)
-    - `bandit -f json {files}` for security findings (category="security"),
-      mapping bandit's severity (LOW/MEDIUM/HIGH) to lowercase
-
-    Parse each tool's actual output format (ruff has a --output-format=json
-    option, bandit has -f json) — do not attempt to regex-parse human-readable
-    tool output.
-
-    If a tool's output can't be parsed, skip that tool's findings and include
-    one finding with source_tool=<tool name>, description="failed to parse
-    output", severity="low" so failures are visible rather than silent."""
-    
+    """Runs deterministic static analysis tools against the given files and returns
+    a normalized list of findings."""
     all_findings = []
     
     if not file_paths:
-return all_findings
+        return all_findings
+
+    # 1. Run Ruff if installed
+    if shutil.which("ruff"):
+        cmd = ["ruff", "check", "--output-format=json"] + file_paths
+        raw_output = _run_tool(cmd, cwd=repo_path)
+        all_findings.extend(_parse_ruff_output(raw_output, repo_path))
+
+    # 2. Run Bandit if installed
+    if shutil.which("bandit"):
+        cmd = ["bandit", "-f", "json"] + file_paths
+        raw_output = _run_tool(cmd, cwd=repo_path)
+        all_findings.extend(_parse_bandit_output(raw_output, repo_path))
+
+    return all_findings
 
 
 def run_security_checks(repo_path: str, file_paths: List[str]) -> List[Dict[str, Any]]:
-    """Deterministic, pattern-based security checks (no LLM), returning
-    findings in the same Finding-compatible shape as
-    run_python_static_checks(), all with category="security" and
-    confidence=1.0. Checks for:
-    - Hardcoded secrets: regex patterns matching common key/token/password
-      assignment patterns (e.g. `api_key = "..."`, `password = "..."` with a
-      non-empty literal string, `AWS_SECRET` patterns) — flag as "high"
-    - subprocess calls with shell=True — flag as "medium" (unsafe if
-      combined with untrusted input, but flag regardless since it's a risk
-      pattern)
-    - Use of eval() or exec() — flag as "high"
-    - pickle.loads() or yaml.load() without Loader=SafeLoader — flag as
-      "high" (unsafe deserialization)
-    - Path operations using unsanitized user input concatenated directly
-      into a path (heuristic: string concatenation or f-string directly
-      into open()/os.path.join() involving a variable — flag as "medium",
-      acknowledge in the description this is a heuristic that may have false
-      positives)
-
-    These are regex/AST pattern checks only — do not attempt full taint
-    analysis or claim high confidence beyond what simple pattern matching
-    actually supports. Say so in code comments where a check is a rough
-    heuristic vs. a solid detection."""
+    """Deterministic, pattern-based security checks (no LLM)."""
     import re
-    import ast
     
     findings = []
     
@@ -253,7 +250,7 @@ def run_security_checks(repo_path: str, file_paths: List[str]) -> List[Dict[str,
                 
                 # pickle.loads() or yaml.load() without SafeLoader
                 if func_name == "loads" and isinstance(node.func, ast.Attribute):
-                    if node.func.value.id == "pickle":
+                    if isinstance(node.func.value, ast.Name) and node.func.value.id == "pickle":
                         findings.append({
                             "severity": "high",
                             "category": "security",
@@ -265,8 +262,7 @@ def run_security_checks(repo_path: str, file_paths: List[str]) -> List[Dict[str,
                         })
                 
                 if func_name == "load" and isinstance(node.func, ast.Attribute):
-                    if node.func.value.id == "yaml":
-                        # Check if Loader=SafeLoader is passed
+                    if isinstance(node.func.value, ast.Name) and node.func.value.id == "yaml":
                         has_safe_loader = False
                         for kw in node.keywords:
                             if kw.arg == "Loader":
@@ -284,8 +280,7 @@ def run_security_checks(repo_path: str, file_paths: List[str]) -> List[Dict[str,
                                 "confidence": 1.0,
                             })
                 
-                # Path operations with potential unsanitized input (heuristic)
-                # Look for open() or os.path.join() with string concatenation/f-string involving variables
+                # Path operations with potential unsanitized input
                 if func_name in ("open", "join") or (isinstance(node.func, ast.Attribute) and node.func.attr in ("open", "join")):
                     for arg in node.args:
                         if _is_potential_path_injection(arg):
@@ -300,28 +295,3 @@ def run_security_checks(repo_path: str, file_paths: List[str]) -> List[Dict[str,
                             })
     
     return findings
-
-
-def _is_potential_path_injection(node: ast.AST) -> bool:
-    """Heuristic: detect string concatenation or f-string that could involve user input.
-    This is a rough heuristic — may have false positives."""
-    # f-string (JoinedStr)
-    if isinstance(node, ast.JoinedStr):
-        # Check if any formatted value is a variable (not a constant)
-        for value in node.values:
-            if isinstance(value, ast.FormattedValue):
-                return True
-    
-    # String concatenation (BinOp with +)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        return _is_potential_path_injection(node.left) or _is_potential_path_injection(node.right)
-    
-    # Variable name (could be user input)
-    if isinstance(node, ast.Name):
-        return True
-    
-    # Function call result (could be user input)
-    if isinstance(node, ast.Call):
-        return True
-    
-    return False

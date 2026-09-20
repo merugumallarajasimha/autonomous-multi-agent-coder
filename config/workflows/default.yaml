@@ -1,10 +1,15 @@
 workflow:
   - planner
+  - create_checkpoint
   - coder
-  - sandbox
   - verifier
   - reviewer
+  - security_reviewer
+  - findings_router
+  - process_findings
   - fixer
-  - sandbox
-  - verifier
-  - approval
+  - human_approval
+  - refactorer
+  - check_more_findings
+  - git_approval
+  - escalate
