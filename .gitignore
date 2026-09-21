@@ -33,6 +33,8 @@ htmlcov/
 
 # Project specific
 target_repo/
+workspace/*
+!workspace/.gitkeep
 runs/
 *.json
 !config/**/*.json
