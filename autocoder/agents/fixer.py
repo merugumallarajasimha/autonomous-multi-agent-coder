@@ -1,4 +1,3 @@
-# autocoder/agents/fixer.py
 import os
 import re
 from typing import Dict, Any, List
@@ -26,7 +25,8 @@ def fixer_node(state: Dict[str, Any]) -> Dict[str, Any]:
     emit(agent="fixer", event="AGENT_STARTED", message="Fixer node started")
     repo_path = state["repo_path"]
     bug_report = state.get("bug_report", {})
-    iteration = state.get("iteration_count", 0) + 1
+    iteration = state.get("iteration_count", 0)
+    written_files = list(state.get("written_files", []))
 
     print(f"🔧 Fixer Agent active (Iteration {iteration})...")
 
@@ -35,6 +35,7 @@ def fixer_node(state: Dict[str, Any]) -> Dict[str, Any]:
         print("⚠️ Fixer found no files in target repository.")
         emit(agent="fixer", event="AGENT_FINISHED", message="No files to fix", metadata={"status": "no_files"})
         return {
+            "written_files": written_files,
             "iteration_count": iteration,
             "history": state.get("history", []) + [{"agent": "fixer", "status": "no_files"}]
         }
@@ -56,7 +57,6 @@ def fixer_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # Build structured error context from FailureReport
     if isinstance(bug_report, dict) and "failed_tests" in bug_report:
-        # New structured format
         failed_tests = bug_report.get("failed_tests", [])
         traceback = bug_report.get("traceback", "")
         affected_files = bug_report.get("affected_files", [])
@@ -76,7 +76,6 @@ def fixer_node(state: Dict[str, Any]) -> Dict[str, Any]:
             f"=== FULL STDERR ===\n{bug_report.get('stderr', '')}\n"
         )
     else:
-        # Backward compatibility: old string format
         error_context = f"=== ERROR LOGS ===\n{bug_report}\n"
 
     emit(agent="fixer", event="ANALYZING_FAILURE", message="Analyzing failure report", metadata={"failure_type": bug_report.get('failure_type') if isinstance(bug_report, dict) else 'legacy'})
@@ -96,6 +95,7 @@ def fixer_node(state: Dict[str, Any]) -> Dict[str, Any]:
         f"Generate corrected code now:"
     )
 
+    patched_file = None
     try:
         response = llm.invoke(prompt)
         raw_output = response.content.strip() if hasattr(response, "content") else str(response)
@@ -107,15 +107,15 @@ def fixer_node(state: Dict[str, Any]) -> Dict[str, Any]:
         target_file = None
         lines = clean_code.splitlines()
         if lines and lines[0].startswith("# FILE:"):
-            target_file = lines[0].replace("# FILE:", "").strip()
+            target_file = lines[0].replace("# FILE:", "").strip().lstrip("/\\")
             clean_code = "\n".join(lines[1:]).strip()
 
-        # Fallback: target file from bug report or existing files
+        # Fallback target resolution
         if not target_file:
-            # Try to use affected_files from structured report
             if isinstance(bug_report, dict) and bug_report.get("affected_files"):
                 for f in bug_report["affected_files"]:
-                    if f in existing_files:
+                    normalized_f = os.path.normpath(f)
+                    if any(os.path.normpath(e) == normalized_f for e in existing_files):
                         target_file = f
                         break
             if not target_file:
@@ -126,16 +126,33 @@ def fixer_node(state: Dict[str, Any]) -> Dict[str, Any]:
             if not target_file and existing_files:
                 target_file = existing_files[0]
 
-        emit(agent="fixer", event="APPLYING_FIX", message=f"Patching {target_file}", metadata={"target_file": target_file})
-        target_path = os.path.join(repo_path, target_file)
-        write_file(target_path, clean_code)
-        print(f"✅ Fixer applied surgical patch to: {target_file}")
+        if target_file:
+            # Normalize target file relative path
+            target_file = os.path.normpath(target_file)
+            target_path = os.path.join(repo_path, target_file)
+            
+            write_file(target_path, clean_code)
+            patched_file = target_file
+            
+            if target_file not in written_files:
+                written_files.append(target_file)
+
+            emit(agent="fixer", event="APPLYING_FIX", message=f"Patching {target_file}", metadata={"target_file": target_file})
+            print(f"✅ Fixer applied surgical patch to: {target_file}")
 
     except Exception as e:
         print(f"⚠️ Fixer LLM failed to patch code: {e}")
 
-    emit(agent="fixer", event="AGENT_FINISHED", message="Fixer node completed", metadata={"status": "patched"})
+    emit(agent="fixer", event="AGENT_FINISHED", message="Fixer node completed", metadata={"status": "patched" if patched_file else "failed"})
+    
     return {
+        "written_files": written_files,
         "iteration_count": iteration,
-        "history": state.get("history", []) + [{"agent": "fixer", "status": "patched"}],
+        "verification_passed": False,
+        "test_passed": False,
+        "history": state.get("history", []) + [{
+            "agent": "fixer",
+            "status": "patched" if patched_file else "failed",
+            "target_file": patched_file
+        }],
     }

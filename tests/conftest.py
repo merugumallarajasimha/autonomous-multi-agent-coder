@@ -6,13 +6,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    load_dotenv(PROJECT_ROOT / ".env")
-except ImportError:
-    pass  # python-dotenv not installed, rely on system env vars
-
 # pyrefly: ignore [missing-import]
 import pytest
 from unittest.mock import MagicMock, patch
@@ -20,8 +13,8 @@ from unittest.mock import MagicMock, patch
 # 1. Enforce dummy API key during testing to prevent accidental real calls
 @pytest.fixture(autouse=True)
 def mock_env_setup():
-    os.environ["OPENAI_API_KEY"] = os.environ.get("OPENROUTER_API_KEY", "dummy-key-for-testing")
-    os.environ["GOOGLE_API_KEY"] = os.environ.get("GOOGLE_API_KEY", "dummy-key-for-testing")
+    os.environ["OPENAI_API_KEY"] = "sk-test-dummy-key-for-testing-only"
+    os.environ["GOOGLE_API_KEY"] = "test-dummy-google-key-for-testing-only"
 
 
 # 2. Automatically mock all LLM invocations across every test suite
