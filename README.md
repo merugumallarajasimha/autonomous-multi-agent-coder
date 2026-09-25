@@ -1,4 +1,4 @@
-# 🤖 Autocoder
+#  Autonomous-Multi-Agent-Coder
 
 > **An Autonomous, Local-First Multi-Agent AI Coding Framework**
 > *Think Claude Code + CodeRabbit — fully open, self-healing, and free to run with local models.*
